@@ -1,0 +1,21 @@
+# 管伊佳ERP Web UI 自动化测试配置
+# 上游依据：《项目二-WebUI自动化测试计划》V1.3、《管伊佳ERP测试需求分析说明书》附录C
+base_url: "http://127.0.0.1:3001"
+api_base_url: "http://127.0.0.1:9999/jshERP-boot"
+
+browser: "chrome"
+headless: false            # Jenkins 上改为 true
+window_size: "1920x1080"
+implicit_wait: 0           # 统一用显式等待，禁用隐式等待
+explicit_wait: 15          # 显式等待默认超时（秒）
+
+account:
+  admin:                   # 主测试账号（需求分析 2.3，浏览器专用）
+    login_name: "jsh"
+    password: "123456"
+  api:                     # 接口数据准备专用账号（与浏览器会话隔离，防 DEF-EXP-06 同用户互踩）
+    login_name: "uitest_api"
+    password: "123456"
+
+data:
+  prefix: "UITEST_"        # 测试数据统一前缀，便于隔离与清理（计划 §5）
