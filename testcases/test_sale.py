@@ -83,43 +83,40 @@ def _new_sale_out(api, qty=5, price=20, pay=0, status=None):
 @allure.feature("销售管理")
 @allure.story("UI-SALE-001 新增销售订单")
 @pytest.mark.smoke
-def test_UI_SALE_001_new_order(sale_order_page, api, sale_mat, master):
+def test_UI_SALE_001_new_order(sale_order_page, api, sale_mat, master, bill_tracker):
     data = sale_order_page.fill_modal(master["customer"], [(BAR, 10, 20)])
     number = data["number"]
     assert number.startswith("XSDD"), f"单据编号前缀异常: {number}"
+    bill_tracker.append((("其它", "销售订单", number),))
     sale_order_page.save()
     row = sale_order_page.find_bill(number)
     assert row, f"保存后列表未查到销售订单 {number}"
     assert row.get("状态") == "未审核"
-    rows = api.list_bill("其它", "销售订单", number)
-    if rows:
-        api.delete_bill(rows[0]["id"])
 
 
 @allure.feature("销售管理")
 @allure.story("UI-SALE-002 销售订单转销售出库(部分转 R3)")
 @pytest.mark.regression
-def test_UI_SALE_002_transfer_partial(sale_order_page, sale_order_audited, api):
+def test_UI_SALE_002_transfer_partial(sale_order_page, sale_order_audited, api, bill_tracker):
     sale_order_page.open()
     new_number = sale_order_page.transfer(sale_order_audited["number"],
                                           "转销售出库", items=[(6,)])
+    bill_tracker.append((("出库", "销售", new_number),))
     assert new_number.startswith("XSCK"), f"转出库单号前缀异常: {new_number}"
     status = sale_order_page.status_of(sale_order_audited["number"])
     # R3：源单状态 3；UI 文案销售语境为"部分销售"
     assert status in ("部分销售", "部分执行"), f"源单状态异常: {status}"
-    rows = api.list_bill("出库", "销售", new_number)
-    if rows:
-        api.delete_bill(rows[0]["id"])
 
 
 @allure.feature("销售管理")
 @allure.story("UI-SALE-003 新增销售出库(收款+库存扣减 R2)")
 @pytest.mark.smoke
-def test_UI_SALE_003_new_sale_out(sale_page, api, sale_mat, master):
+def test_UI_SALE_003_new_sale_out(sale_page, api, sale_mat, master, bill_tracker):
     stock_before = float(api.find_material(MAT)["stock"])
     data = sale_page.fill_modal(master["customer"], [(BAR, 3, 20)],
                                 account=master["account"], pay="20")
     number = data["number"]
+    bill_tracker.append((("出库", "销售", number),))
     sale_page.save()
     row = sale_page.find_bill(number)
     assert row, f"保存后列表未查到销售出库 {number}"
@@ -130,9 +127,6 @@ def test_UI_SALE_003_new_sale_out(sale_page, api, sale_mat, master):
     stock_after = float(api.find_material(MAT)["stock"])
     assert abs(stock_after - (stock_before - 3)) < 0.001, \
         f"库存应减 3: {stock_before}→{stock_after}"
-    rows = api.list_bill("出库", "销售", number)
-    if rows:
-        api.delete_bill(rows[0]["id"])
 
 
 @allure.feature("销售管理")
@@ -195,24 +189,24 @@ def test_UI_SALE_005_low_price_blocked(sale_page, api, sale_mat, master):
 @allure.feature("销售管理")
 @allure.story("UI-SALE-007 销售退货关联原单(库存回补)")
 @pytest.mark.regression
-def test_UI_SALE_007_sale_return(sale_page, api, sale_mat, master):
+def test_UI_SALE_007_sale_return(sale_page, api, sale_mat, master, bill_tracker):
     sale_page.open()
     stock_before = float(api.find_material(MAT)["stock"])
     # 实测：未审核出库不能转退货（toast"该状态不能转销售退货"），须先审核
     bid, number = _new_sale_out(api, qty=10, price=20, pay=0, status="1")
+    bill_tracker.append((("出库", "销售", number),))
     time.sleep(1.3)
     stock_after_out = float(api.find_material(MAT)["stock"])
     assert abs(stock_after_out - (stock_before - 10)) < 0.001
 
     # UI 勾选出库单 → 转销售退货 → 编辑器带入 → 保存（复用 transfer 的健壮流程）
     ret_number = sale_page.transfer(number, "转销售退货")
+    # UI 建的退货单 remark 为空，兜底 sweep 扫不到；候选两种 type/subType 口径
+    bill_tracker.append((("入库", "销售退货", ret_number),
+                         ("其它", "销售退货", ret_number)))
     time.sleep(1.3)
     stock_after_ret = float(api.find_material(MAT)["stock"])
     assert abs(stock_after_ret - stock_before) < 0.001, \
         f"退货后库存应回补至原值: {stock_after_out}→{stock_after_ret}"
-    # teardown：删退货单与出库单
-    ret_rows = api.list_bill("入库", "销售退货", ret_number) or \
-        api.list_bill("其它", "销售退货", ret_number)
-    if ret_rows:
-        api.delete_bill(ret_rows[0]["id"])
+    # teardown：源出库单已审核需反审核再删，走 safe_delete_bill（tracker 只会直接删）
     api.safe_delete_bill(bid)

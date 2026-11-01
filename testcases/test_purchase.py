@@ -100,15 +100,15 @@ def purchase_in_audited(api, mat):
 @allure.feature("采购管理")
 @allure.story("UI-PUR-001 新增采购订单(含明细行)")
 @pytest.mark.smoke
-def test_UI_PUR_001_new_order(order_page, api, mat, master):
+def test_UI_PUR_001_new_order(order_page, api, mat, master, bill_tracker):
     data = order_page.fill_modal(master["supplier"], [(BAR, 10, 10)])
     number = data["number"]
     assert number.startswith("CGDD"), f"单据编号前缀异常: {number}"
+    bill_tracker.append((("其它", "采购订单", number),))
     order_page.save()
     row = order_page.find_bill(number)
     assert row, f"保存后列表未查到订单 {number}"
     assert row.get("状态") == "未审核", f"新订单状态应为未审核: {row}"
-    api.safe_delete_bill(row["id"]) if row.get("id") else None
 
 
 @allure.feature("采购管理")
@@ -122,17 +122,14 @@ def test_UI_PUR_002_audit_order(order_page, order_unaudited):
 @allure.feature("采购管理")
 @allure.story("UI-PUR-003 订单转采购入库(部分转→部分执行 R3)")
 @pytest.mark.regression
-def test_UI_PUR_003_transfer_partial(order_page, order_audited, api):
+def test_UI_PUR_003_transfer_partial(order_page, order_audited, api, bill_tracker):
     order_page.open()
     new_number = order_page.transfer(order_audited["number"], "转采购入库",
                                      items=[(6,)])
     assert new_number.startswith("CGRK"), f"转入库单号前缀异常: {new_number}"
+    bill_tracker.append((("入库", "采购", new_number),))
     # 源单状态变部分执行（R3 实测状态 3；UI 文案采购语境为"部分采购"）
     assert order_page.status_of(order_audited["number"]) == "部分采购"
-    # teardown：先删子单（入库）再由夹具删源单
-    rows = api.list_bill("入库", "采购", new_number)
-    if rows:
-        api.delete_bill(rows[0]["id"])
 
 
 @allure.feature("采购管理")

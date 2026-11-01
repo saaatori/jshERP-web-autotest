@@ -64,6 +64,45 @@ def api(cfg) -> JshApi:
     yield client
 
 
+@pytest.fixture()
+def bill_tracker(api):
+    """登记用例中创建的单据，用例结束（无论成败）自动删除。
+
+    用法：bill_tracker.append((("出库", "销售", number),))
+    每个元素可给多个候选 (type, subType, number)，teardown 逐个尝试直到查到并删除。
+    解决"断言失败 → 用例尾部内联清理被跳过"的残留问题。"""
+    tracked = []
+    yield tracked
+    for candidates in tracked:
+        for t, st, num in candidates:
+            try:
+                rows = api.list_bill(t, st, num)
+            except Exception as e:  # noqa: BLE001 - 清理尽力而为
+                log.warning("账单清理查询失败 %s/%s/%s: %s", t, st, num, e)
+                continue
+            if rows:
+                try:
+                    api.delete_bill(rows[0]["id"])
+                except Exception as e:  # noqa: BLE001
+                    log.warning("账单清理删除失败 %s: %s", num, e)
+                break
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_sweep(request):
+    """会话结束兜底：按 UITEST 前缀扫删残留测试数据（不影响用例结果）。"""
+    yield
+    try:
+        acct = _cfg["account"]["api"]
+        client = JshApi(_cfg["api_base_url"], acct["login_name"], acct["password"])
+        client.login()
+        removed = client.sweep_test_data()
+        if any(removed.values()):
+            log.info("会话结束兜底清理: %s", removed)
+    except Exception as e:  # noqa: BLE001 - 兜底失败不影响用例结果
+        log.warning("会话结束兜底清理异常: %s", e)
+
+
 @pytest.fixture(scope="session")
 def master(api) -> dict:
     """主数据名称（供应商/客户/仓库/账户，动态解析）"""

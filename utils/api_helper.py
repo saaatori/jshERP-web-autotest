@@ -183,7 +183,20 @@ class JshApi:
 
     # ---- 角色按钮位（UI-SYS-004 用；btnStr 非空会使非经理用户菜单接口 500，
     #      见 DEF-UI-004，测后必须清除）----
+    def find_role_id(self, name: str) -> Optional[int]:
+        """按名称查角色 id（/role/allList 裸数组）；不存在返回 None。
+        权限用例经此动态获取受限角色 id（bootstrap 脚本创建「UITEST受限」），
+        不再硬编码库内自增 id。"""
+        data = self._call("GET", "/role/allList")
+        for row in data if isinstance(data, list) else []:
+            if str(row.get("name")) == name:
+                return row["id"]
+        return None
+
     def set_role_btn_str(self, role_id, btn_str) -> None:
+        """写角色按钮位（UI-SYS-004）。注意：btn_str 传 None 后端会忽略
+        （实测清理无效、字段保持原值），内部统一转空串实现真正清除。"""
+        btn_str = btn_str or ""
         r = self._call("GET", "/userBusiness/getBasicData",
                        params={"Type": "RoleFunctions", "KeyId": str(role_id)})
         lst = r.get("data", {}).get("userBusinessList", [])
@@ -204,6 +217,64 @@ class JshApi:
         info = self.get_system_config()
         info["minusStockFlag"] = str(value)
         self._call("PUT", "/systemConfig/update", body=info)
+
+    def sweep_test_data(self) -> dict:
+        """会话结束兜底清理：按 UITEST 前缀扫删本框架产生的测试数据
+        （单据[remark=UITEST*] → 往来单位 → 仓库 → 结算账户 → 商品）。
+        不触碰测试账号体系（用户/角色/绑定）与系统原生数据。
+        已知不覆盖：财务单据（accountHead，当前无用例保存此类单据）。"""
+        removed = {"bill": 0, "supplier": 0, "depot": 0, "account": 0, "material": 0}
+        for t, st in (("其它", "采购订单"), ("订单", "采购订单"), ("其它", "销售订单"),
+                      ("订单", "销售订单"), ("入库", "其它"), ("入库", "采购"),
+                      ("出库", "销售"), ("入库", "销售退货"), ("出库", "调拨"),
+                      ("出库", "零售")):
+            d = self._call("GET", "/depotHead/list", params={
+                "search": json.dumps({"type": t, "subType": st, "number": ""},
+                                     ensure_ascii=False),
+                "currentPage": "1", "pageSize": "50"})
+            if not isinstance(d, dict):
+                continue
+            for r in (d.get("data") or {}).get("rows", []) or []:
+                if str(r.get("remark") or "").startswith("UITEST"):
+                    self.delete_bill(r["id"])
+                    removed["bill"] += 1
+        for t in ("供应商", "客户", "会员"):
+            d = self._call("GET", "/supplier/list", params={
+                "search": json.dumps({"type": t}, ensure_ascii=False),
+                "currentPage": "1", "pageSize": "50"})
+            if not isinstance(d, dict):
+                continue
+            for r in (d.get("data") or {}).get("rows", []) or []:
+                if str(r.get("supplier") or "").startswith("UITEST"):
+                    self._call("DELETE", f"/supplier/deleteBatch?ids={r['id']},")
+                    removed["supplier"] += 1
+        d = self._call("GET", "/depot/list")
+        if isinstance(d, dict):
+            for r in (d.get("data") or {}).get("rows", []) or []:
+                if str(r.get("name") or "").startswith("UITEST"):
+                    self._call("DELETE", f"/depot/deleteBatch?ids={r['id']},")
+                    removed["depot"] += 1
+        d = self._call("GET", "/account/list", params={
+            "search": "", "currentPage": "1", "pageSize": "50"})
+        if isinstance(d, dict):
+            for r in (d.get("data") or {}).get("rows", []) or []:
+                if str(r.get("name") or "").startswith("UITEST"):
+                    self._call("DELETE", f"/account/deleteBatch?ids={r['id']},")
+                    removed["account"] += 1
+        for _ in range(10):  # 删一页再查一页，直到清空（防长尾分页）
+            d = self._call("GET", "/material/list", params={
+                "search": json.dumps({"materialParam": "UITEST"}, ensure_ascii=False),
+                "currentPage": "1", "pageSize": "50"})
+            if not isinstance(d, dict):
+                break
+            rows = (d.get("data") or {}).get("rows", []) or []
+            if not rows:
+                break
+            for r in rows:
+                if str(r.get("name") or "").startswith("UITEST"):
+                    self.delete_material(r["id"])
+                    removed["material"] += 1
+        return removed
 
     def close(self) -> None:
         """teardown 备用：退出会话，避免 token 悬挂"""

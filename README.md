@@ -12,7 +12,7 @@ Python + Selenium + Pytest + Allure + logging + Excel 关键字驱动 + PO 模�
 jshERP-web-autotest/
 ├── config/ui_config.yaml        # base_url、浏览器、等待、账号
 ├── data/
-│   ├── ui_cases.xlsx            # 自动化用例登记表（37 条，含关键字步骤/节点）
+│   ├── ui_cases.xlsx            # 自动化用例登记表（41 条，含关键字步骤/节点）
 │   └── keywords.xlsx            # 关键字定义
 ├── page/                        # PO 层：BasePage + 各业务 Page Object
 │   ├── base_page.py             # 显式等待/点击降级/AntD组件/表格/截图
@@ -41,12 +41,14 @@ jshERP-web-autotest/
 - **JS 点击降级**：背景动画/浮层遮挡导致 ElementClickInterceptedException 时降级 JS click（登录页实测）。
 - **数据后门**：`utils/api_helper.py` 封装项目一接口约定（MD5 登录、X-Access-Token、请求间隔 1.2s 防 DEF-EXP-06 防攻击误杀），UI 用例的数据预置/清理全部走接口。
 - **失败取证**：pytest 钩子自动截图 + 页面源码 + Allure 附件。
-- **测试数据隔离**：UITEST_ 前缀 + 动态后缀，teardown 恢复（含 minus_stock_flag 开关翻转用例）。
+- **测试数据隔离与自清理（三层）**：①用例数据全部 UITEST_ 前缀 + 动态后缀；②`bill_tracker` 夹具登记 UI 建的单据（含 remark 为空、兜底扫不到的 UI 保存单），用例结束无论成败自动删除（解决"断言失败→尾部清理被跳过"）；③会话结束兜底钩子按 UITEST 前缀扫删商品/往来单位/仓库/结算账户/带 UITEST 备注 的单据（`utils/sweep_now.py` 可手动执行）。测试账号体系（uitest_api/uitest_ro/uitest_sale 及受限角色）为常驻基础设施，不在清理范围，数据库重置后用 `utils/bootstrap_test_accounts.py` 一键重建（幂等）。已知限制：曾进入过单据明细的商品在该构建下无法删除（code 601）——历史调试期遗留的惰性数据已随 2026-11-01 数据库重置清除，UI 建单用例全部改走 bill_tracker 登记后不再产生新残留。
 
 ## 运行
 
 ```bash
 pip install -r requirements.txt
+# 首次执行或数据库重置后：重建测试账号基础设施（幂等，id 动态发现）
+python utils/bootstrap_test_accounts.py
 # 冒烟
 pytest -m smoke
 # 全量
@@ -68,7 +70,7 @@ allure generate allure-results -o reports/allure-report --clean
 
 连续三轮无环境性偶发失败，满足测试计划准出条件第 3 条。
 
-覆盖（自动化 41 条代码用例 + 3 条 Excel 关键字驱动）：登录 5、主框架 2、商品 4、基础资料 4、采购 8、销售 7、仓库报表 3、零售 3、财务 1、权限 4、通用交互 1 + Excel 驱动 3。报告：`reports/allure-report/index.html`。
+覆盖（自动化 41 条代码用例 + 3 条 Excel 关键字驱动）：登录 5、主框架 2、商品 4、基础资料 4、采购 8、销售 6、仓库报表 3、零售 3、财务 1、权限 4、通用交互 1 + Excel 驱动 3。报告：`reports/allure-report/index.html`。
 
 ## 实测记录与缺陷候选（禅道跟踪）
 
@@ -79,18 +81,20 @@ allure generate allure-results -o reports/allure-report --clean
 
 > 排查期间曾误报 4 个缺陷（菜单接口 500 / btnStr 触发 500 / 按钮位不生效 / 条码重复无提示），
 > 复核确认均为测试手段问题（接口裸调缺 body、提示形态未覆盖 Tooltip），已撤销并归档为教训——
-> 见 `docs/问题与解决方案.md` 第四节。
+> 见 `docs/问题与解决方案.md` 第四节。2026-11-01 复测期间又一次"按钮位已生效"误判
+> （实为 DEF-EXP-06 降级假象冒充缺陷修复），经 API 三层数据交叉验证后纠正，
+> DEF-UI-005 维持成立——完整复盘见 4.4 节。
 
 另：DEF-EXP-06（防攻击机制同秒双操作强制注销）导致全量回归时接口建数与浏览器操作
 同用户互踩，框架层以**独立接口账号 uitest_api**（管理员角色）与浏览器会话隔离。
 
-各缺陷的实测注记已写入对应用例 docstring 与 Allure 描述；预期结果以系统实际行为为准回填用例。五个缺陷的禅道提交底稿（标题/类型/严重程度/优先级/重现步骤/预期/实际/关键词）见 [docs/缺陷提交清单.md](docs/缺陷提交清单.md)。
+各缺陷的实测注记已写入对应用例 docstring 与 Allure 描述；预期结果以系统实际行为为准回填用例。三个有效缺陷（DEF-UI-002 / DEF-EXP-01 / DEF-UI-005）的禅道提交底稿（标题/类型/严重程度/优先级/重现步骤/预期/实际/关键词）见 [docs/缺陷提交清单.md](docs/缺陷提交清单.md)。
 
 框架搭建与调试过程中的全部问题、根因与解决方法（含排查方法论）详见 [docs/问题与解决方案.md](docs/问题与解决方案.md)。
 
 ## Excel 驱动
 
-`data/ui_cases.xlsx` 登记全部 37 条自动化用例（上游 59 条中的自动化子集）：
+`data/ui_cases.xlsx` 登记全部 41 条自动化用例（上游 59 条中"是否自动化=是"的 40 条 + 新增对照用例 UI-RET-002C）：
 `执行方式=keyword` 由 `testcases/test_excel_driver.py` 按关键字步骤驱动；
 `执行方式=codecase` 的复杂链路由同编号 pytest 代码用例承载（驱动入口 skip，Excel 为追溯源）。
 

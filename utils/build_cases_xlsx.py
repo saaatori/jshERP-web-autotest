@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""生成 data/ui_cases.xlsx（自动化用例登记表）与 data/keywords.xlsx（关键字表）。
+r"""生成 data/ui_cases.xlsx（自动化用例登记表）与 data/keywords.xlsx（关键字表）。
 
 与 F:\jsh-ERP-test\03-测试用例\管伊佳ERP-WebUI测试用例.xlsx（59 条全量）的对应关系：
-本表只登记"是否自动化=是"的 40 条（不含 19 条手工），执行方式分两类：
+本表登记上游"是否自动化=是"的 40 条 + 新增对照用例 UI-RET-002C，共 41 条
+（不含 19 条手工），执行方式分两类：
 - keyword   ：由 Excel 关键字步骤驱动（keywords/executor.py 反射执行）
 - codecase  ：复杂链路场景，步骤列为 pytest 节点，由代码用例承载（Excel 登记
               步骤/预期供追溯，驱动入口跳过并记录）
@@ -54,7 +55,7 @@ CASES = [
      "全局", "受限用户登录核对菜单", "未授权模块不出现（DEF-UI-003/004 实测注记）",
      CODE, "testcases/test_zz_permission.py::test_UI_SYS_003_menu_restricted", "MenuFrame", "permission", "test_permission"),
     ("UI-SYS-004", "REQ-SYS-001", "系统管理", "按钮权限(push_btn)", "P0", "受限角色/用户已建",
-     "/material/material", "配置按钮位→核对按钮", "实测按钮位不生效（DEF-UI-005 注记）",
+     "/material/material", "配置按钮位→核对按钮", "实测按钮位下发但前端不应用，按钮仍显示（DEF-UI-005 注记；按钮全隐藏系 DEF-EXP-06 降级假象，判缺陷前先排除）",
      CODE, "testcases/test_zz_permission.py::test_UI_SYS_004_push_btn_hidden", "MaterialPage", "permission", "test_permission"),
     ("UI-SYS-005", "REQ-SYS-003", "系统管理", "直接输入URL被拦", "P0", "受限用户已登录",
      "地址栏", "直接输入/bill/purchase_in", "不展示业务数据",

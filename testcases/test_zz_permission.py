@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """权限 UI 用例（UI-SYS-003/004/005、UI-SALE-006，对应 REQ-SYS-001/003、REQ-SALE-003）。
 
-前置：API 预置受限角色+用户（uitest_ro/123456）：
-- 角色 56：功能=商品信息(23)+销售管理(38)+销售出库(41)；用户仓库授权=仓库1(14)
-- 夹具幂等：已绑定则不重复添加（避免产生重复 userBusiness 记录）
+前置（utils/bootstrap_test_accounts.py 一键重建，幂等）：
+- 受限角色「UITEST受限」：功能=商品信息+销售管理+销售出库（id 动态发现，不硬编码）
+- uitest_ro/123456：绑受限角色 + 仓库授权=仓库1
+- uitest_sale/123456：绑销售代表角色 + 仓库授权=仓库1
 """
 import time
 
@@ -51,8 +52,16 @@ def restricted_logged(driver, api):
 
 @pytest.fixture(scope="module")
 def sale_restricted_logged(driver, api):
-    """销售受限用户（角色17=销售代表 + 仅授权仓库1）"""
+    """销售受限用户（销售代表角色 + 仅授权仓库1）"""
     return _switch_user(driver, SALE_USER, SALE_PASSWORD)
+
+
+@pytest.fixture(scope="module")
+def ro_role_id(api):
+    """受限角色 id（bootstrap 创建「UITEST受限」，按名称动态发现）"""
+    rid = api.find_role_id("UITEST受限")
+    assert rid, "受限角色「UITEST受限」不存在，请先运行 utils/bootstrap_test_accounts.py"
+    return rid
 
 
 @allure.feature("系统管理")
@@ -73,15 +82,30 @@ def test_UI_SYS_003_menu_restricted(restricted_logged):
 
 @allure.feature("系统管理")
 @allure.story("UI-SYS-004 按钮权限(push_btn)实测行为")
-def test_UI_SYS_004_push_btn_hidden(restricted_logged, api):
-    """实测（2026-10-28）：配置按钮位后 /user/getUserBtnByCurrentUser 恒返回
-    空列表，按钮位配置在该构建不生效——【新增】按钮仍显示（缺陷候选
-    DEF-UI-005，已入缺陷跟踪；此前观察到的"按钮全隐藏"实为菜单接口 500
-    时前端的整体降级，见 DEF-UI-004）。
-    本用例断言安全基线：受限用户页面可用（查询正常），并把实测行为写入
-    Allure 附注供缺陷跟踪引用。"""
-    api.set_role_btn_str(56, '[{"funId":23,"btnStr":"1"}]')
+def test_UI_SYS_004_push_btn_hidden(restricted_logged, api, ro_role_id):
+    """按钮位配置不生效——缺陷候选 DEF-UI-005 的反向编码断言（若失败说明
+    缺陷已修复，请更新本用例与缺陷状态）。
+
+    完整排查史（2026-10-28 首测，2026-11-01 两次反转，详见
+    docs/问题与解决方案.md 4.4）：
+    1. 首测：写入 btnStr 后【新增】仍显示 → 登记 DEF-UI-005；
+    2. 11-01 干净库重建后一次复测观察到"按钮全隐藏"，误判为缺陷已修复
+       并反转断言——随后单跑复测按钮又出现，行为在两态间摇摆；
+    3. 纯 API 诊断定真相：btnStr 写入/回读/受限用户视角接口全部确定生效，
+       但按钮位数据齐全时前端仍渲染全部按钮（配置未被应用，DEF-UI-005
+       维持成立）；"按钮全隐藏"实为页面挂载时并发拉接口触发 DEF-EXP-06
+       同秒双操作强制注销，按钮位请求失败后前端整体降级（DEF-UI-004
+       现象的随机复现），与按钮位机制无关。
+    断言口径：查询可用（安全基线）+【新增】仍显示（缺陷行为注记）。
+    API 层旁证：set_role_btn_str 后 getBasicData 回读与
+    /user/getUserBtnByCurrentUser 均含 btnStr（失败即环境问题而非缺陷）。"""
+    api.set_role_btn_str(ro_role_id, '[{"funId":23,"btnStr":"1"}]')
     try:
+        # API 层旁证：写入确实生效（区别于"写入失败导致按钮未受限"的环境问题）
+        r = api._call("GET", "/userBusiness/getBasicData",
+                      params={"Type": "RoleFunctions", "KeyId": str(ro_role_id)})
+        rec = (r.get("data") or {}).get("userBusinessList")[0]
+        assert rec.get("btnStr"), "btnStr 写入未生效（环境问题，非缺陷判定依据）"
         page = MaterialPage(restricted_logged)
         page.open()
         page.dismiss_popups()
@@ -89,11 +113,21 @@ def test_UI_SYS_004_push_btn_hidden(restricted_logged, api):
         query_btn = page.find_all(page.toolbar_button("查 询"))
         assert query_btn and query_btn[0].is_displayed(), "查询按钮应可用"
         new_btn = page.find_all(page.toolbar_button("新增"))
-        # 实测：按钮位配置不生效，新增按钮仍显示（缺陷 DEF-UI-005）
+        if not new_btn:
+            # 新增缺失有两种成因：缺陷已修复（按钮位被应用）或 DEF-EXP-06 降级
+            # 假象（瞬时态，页面其余功能正常）。降级刷新一次即恢复——刷新后
+            # 仍隐藏才判"缺陷已修复"。
+            page.driver.refresh()
+            page.wait_for_ready()
+            page.dismiss_popups()
+            time.sleep(1.5)
+            new_btn = page.find_all(page.toolbar_button("新增"))
+        # 实测：按钮位数据已下发但前端不应用，新增按钮仍显示（缺陷 DEF-UI-005）
         assert new_btn and new_btn[0].is_displayed(), \
-            "实测按钮位配置不生效（若断言失败说明缺陷已被修复，请更新本用例与缺陷状态）"
+            "实测按钮位配置不生效（刷新一次后按钮仍隐藏，若非降级假象则说明缺陷已被" \
+            "修复，请更新本用例与缺陷状态）"
     finally:
-        api.set_role_btn_str(56, None)
+        api.set_role_btn_str(ro_role_id, None)
 
 
 @allure.feature("系统管理")

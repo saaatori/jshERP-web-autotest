@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""仓库/库存报表/零售/财务 UI 用例（UI-DEP-001~003、UI-RET-001、UI-FIN-001）。
+"""仓库/库存报表/零售/财务 UI 用例（UI-DEP-001~003、UI-RET-001/002、UI-FIN-001）。
 
 调拨/零售编辑器为 div.tr 网格（同单据编辑器），复用 _mark_detail_row 定位。
 """
@@ -50,7 +50,7 @@ def dep_mat(api):
 @allure.feature("仓库管理")
 @allure.story("UI-DEP-001 调拨出库两仓联动(总库存守恒)")
 @pytest.mark.db_check
-def test_UI_DEP_001_allocation(dep_page, api, dep_mat, master):
+def test_UI_DEP_001_allocation(dep_page, api, dep_mat, master, bill_tracker):
     dep_page.open()
     bar = dep_mat["barcode"]
     dep_page.open_new_modal()
@@ -59,6 +59,8 @@ def test_UI_DEP_001_allocation(dep_page, api, dep_mat, master):
     dep_page.search_select(dep_page._detail_select("调入仓库", 1), "仓库2")
     dep_page.fill(dep_page._detail_input("数量", 1), 10)
     number = dep_page._read_bill_number()
+    # UI 保存的单据 remark 为空，会话兜底 sweep 扫不到，必须登记 tracker 按单号删
+    bill_tracker.append((("出库", "调拨", number),))
     dep_page.save()
     row = dep_page.find_bill(number)
     assert row, f"保存后列表未查到调拨单 {number}"
@@ -66,7 +68,6 @@ def test_UI_DEP_001_allocation(dep_page, api, dep_mat, master):
     m = api.find_material(dep_mat["name"])
     assert abs(float(m["stock"]) - 60) < 0.001, \
         f"调拨守恒：总库存应仍为 60，实际 {m['stock']}"
-    api.safe_delete_bill(row["id"]) if row.get("id") else None
 
 
 @allure.feature("仓库管理")
@@ -124,7 +125,7 @@ def retail_mat(api):
 @allure.feature("零售管理")
 @allure.story("UI-RET-001 零售出库(会员现付)")
 @pytest.mark.smoke
-def test_UI_RET_001_retail(ret_page, api, retail_mat):
+def test_UI_RET_001_retail(ret_page, api, retail_mat, bill_tracker):
     data = api._call("GET", "/supplier/list", params={
         "search": json.dumps({"type": "会员"}, ensure_ascii=False),
         "currentPage": "1", "pageSize": "5"})
@@ -139,6 +140,8 @@ def test_UI_RET_001_retail(ret_page, api, retail_mat):
     ret_page.fill(ret_page._detail_input("数量", 1), 1)
     ret_page.fill(ret_page._detail_input("单价", 1), 20)
     number = ret_page._read_bill_number()
+    # UI 建单 remark 为空，兜底 sweep 扫不到；登记 tracker 防断言失败泄漏
+    bill_tracker.append((("出库", "零售", number), ("其它", "零售", number)))
     ret_page.save()
     row = ret_page.find_bill(number)
     assert row, f"保存后列表未查到零售单 {number}"
@@ -146,9 +149,6 @@ def test_UI_RET_001_retail(ret_page, api, retail_mat):
     stock_after = float(api.find_material(retail_mat["name"])["stock"])
     assert abs(stock_after - (stock_before - 1)) < 0.001, \
         f"零售后库存应-1: {stock_before}→{stock_after}"
-    rows = api.list_bill("出库", "零售", number) or api.list_bill("其它", "零售", number)
-    if rows:
-        api.delete_bill(rows[0]["id"])
 
 
 @pytest.fixture()
@@ -173,7 +173,7 @@ def prepaid_member(api):
 @allure.feature("零售管理")
 @allure.story("UI-RET-002 会员预付款结算选项与余额扣减(R5)")
 @pytest.mark.regression
-def test_UI_RET_002_prepaid_settle(ret_page, api, retail_mat, prepaid_member):
+def test_UI_RET_002_prepaid_settle(ret_page, api, retail_mat, prepaid_member, bill_tracker):
     """R5 实测：会员预存>0 时结算方式出现"预付款（余额）"选项，选预付款支付
     后实时扣减。实测（2026-10-28）：预存 100 支付 20 后 advanceIn=-20——期初
     预存被余额重算覆盖清零再扣减（即探索阶段缺陷候选 DEF-EXP-01 的表现，
@@ -198,6 +198,7 @@ def test_UI_RET_002_prepaid_settle(ret_page, api, retail_mat, prepaid_member):
     ret_page.fill(ret_page._detail_input("数量", 1), 1)
     ret_page.fill(ret_page._detail_input("单价", 1), 20)
     number = ret_page._read_bill_number()
+    bill_tracker.append((("出库", "零售", number), ("其它", "零售", number)))
     ret_page.save()
     row = ret_page.find_bill(number)
     assert row, f"预付款零售单未保存: {number}"
@@ -211,10 +212,6 @@ def test_UI_RET_002_prepaid_settle(ret_page, api, retail_mat, prepaid_member):
     advance_after = float(data["data"]["rows"][0].get("advanceIn") or 0)
     assert advance_after != 100, \
         f"预付款支付后预存额应发生变化(实测-20,DEF-EXP-01): {advance_after}"
-    # teardown：删零售单
-    rows = api.list_bill("出库", "零售", number) or api.list_bill("其它", "零售", number)
-    if rows:
-        api.delete_bill(rows[0]["id"])
 
 
 @allure.feature("零售管理")
@@ -311,7 +308,7 @@ def test_UI_FIN_001_payment_discount_calc(fin_page, api, debt_bill, master):
 
     def _labeled_value(label: str):
         return fin_page.driver.execute_script(
-            """
+            r"""
             const modal = [...document.querySelectorAll('.ant-modal')]
               .filter(m => m.offsetParent !== null).pop();
             if (!modal) return null;
